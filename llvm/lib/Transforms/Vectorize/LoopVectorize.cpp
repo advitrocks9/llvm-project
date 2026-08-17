@@ -5649,11 +5649,6 @@ bool VPCostContext::willBeScalarized(Instruction *I, ElementCount VF) const {
          (VF.isVector() && CM.isProfitableToScalarize(I, VF));
 }
 
-bool VPCostContext::isUniformAfterVectorization(Instruction *I,
-                                                ElementCount VF) const {
-  return CM.isUniformAfterVectorization(I, VF);
-}
-
 bool VPCostContext::isMaskRequired(Instruction *I) const {
   return CM.isMaskRequired(I);
 }
