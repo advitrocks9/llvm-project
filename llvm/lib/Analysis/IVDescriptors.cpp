@@ -1697,14 +1697,6 @@ bool InductionDescriptor::isInductionPHI(
   return true;
 }
 
-static bool hasUniqueLoopVariantOperand(Value *Cur, Instruction *I,
-                                        const Loop *L) {
-  auto LoopVariantOp = [&](Value *V, bool /*AllowRepeats*/) -> Value * {
-    return L->isLoopInvariant(V) ? nullptr : V;
-  };
-  return find_singleton<Value>(I->operands(), LoopVariantOp) == Cur;
-}
-
 // Recognize monotonic phi variable by matching the following pattern:
 // loop_header:
 //   %monotonic_phi = phi [ %start, %preheader ], [ %chain_phi0, %latch ]
@@ -1837,9 +1829,8 @@ bool MonotonicDescriptor::CollectCompressedMemOpUsers(
     if (!Seen.insert(U).second)
       continue;
 
-    auto *I = dyn_cast<Instruction>(U->getUser());
-    if (!I)
-      continue;
+    Value *CurrentVal = U->get();
+    auto *I = cast<Instruction>(U->getUser());
 
     if (isa<LoadInst, StoreInst>(I)) {
       // Disallow any store using the PN as the stored value.
@@ -1862,12 +1853,17 @@ bool MonotonicDescriptor::CollectCompressedMemOpUsers(
       return false;
     }
 
+    auto LoopVariantOp = [&](Value *V, bool /*AllowRepeats*/) -> Value * {
+      return L->isLoopInvariant(V) ? nullptr : V;
+    };
+
     // Non-memory users may use any opcode (select/and/or/etc.), but they must
     // propagate Cur as their only loop-varying input. That prevents mixing in a
     // second loop-varying term; GetCompressedPtrSCEV then rewrites the full
     // leaf pointer SCEV and rejects it unless the entire address still
     // simplifies to the required affine AddRec.
-    if (I->use_empty() || !hasUniqueLoopVariantOperand(U->get(), I, L))
+    if (I->use_empty() ||
+        find_singleton<Value>(I->operands(), LoopVariantOp) != CurrentVal)
       return false;
     append_range(Worklist, make_pointer_range(I->uses()));
   }
