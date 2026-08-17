@@ -1858,9 +1858,9 @@ bool MonotonicDescriptor::CollectCompressedMemOpUsers(
     };
 
     // Non-memory users may use any opcode (select/and/or/etc.), but they must
-    // propagate Cur as their only loop-varying input. That prevents mixing in a
-    // second loop-varying term; GetCompressedPtrSCEV then rewrites the full
-    // leaf pointer SCEV and rejects it unless the entire address still
+    // only have CurrentVal as their only loop-varying input. That prevents
+    // mixing in a second loop-varying term. GetCompressedPtrSCEV rewrites the
+    // full leaf pointer SCEV and rejects it unless the entire address still
     // simplifies to the required affine AddRec.
     if (I->use_empty() ||
         find_singleton<Value>(I->operands(), LoopVariantOp) != CurrentVal)
