@@ -495,14 +495,22 @@ public:
 
   MonotonicDescriptor() = default;
 
-  MonotonicDescriptor(SmallPtrSetImpl<PHINode *> &Chain, Instruction *StepInst,
-                      Edge PredEdge, const SCEV *Expr)
-      : Chain(llvm::from_range, Chain), StepInst(StepInst), PredEdge(PredEdge) {
-    setIfAffineAddRec(Expr);
-  }
+  MonotonicDescriptor(
+      const SmallPtrSetImpl<PHINode *> &Chain,
+      const DenseMap<Instruction *, const SCEV *> &CompressedMemOps,
+      Instruction *StepInst, Edge PredEdge, const SCEVAddRecExpr *Expr)
+      : Chain(llvm::from_range, Chain), CompressedMemOps(CompressedMemOps),
+        StepInst(StepInst), PredEdge(PredEdge), Expr(Expr) {}
 
   /// Returns the PHIs that feed into the backedge of the monotonic PHI.
   const SmallPtrSetImpl<PHINode *> &getChain() const { return Chain; }
+
+  // Returns memory operations whose addresses are derived from this monotonic
+  // PHI. The keys are load or store instructions, the values are SCEVAddRecs
+  // that represent the pointer operand along the predicated edge.
+  const DenseMap<Instruction *, const SCEV *> &getCompressedMemoryOps() const {
+    return CompressedMemOps;
+  }
 
   /// Returns the instruction that updates the value of the monotonic PHI.
   Instruction *getStepInst() const { return StepInst; }
@@ -510,8 +518,7 @@ public:
   /// Returns the edge where the monotonic value/PHI is updated when taken.
   Edge getPredicateEdge() const { return PredEdge; }
 
-  /// Returns the expression that represents the monotonic PHI (match with
-  /// isMonotonicPHI) or monotonic value (match with isMonotonicVal). Note: The
+  /// Returns the expression that represents the monotonic PHI. Note: The
   /// conditional update is represented with a plain SCEVAddRec within the
   /// expression, this only holds along the predicated edge.
   const SCEVAddRecExpr *getExpr() const { return Expr; }
@@ -522,15 +529,12 @@ public:
   static bool isMonotonicPHI(PHINode *PN, const Loop *L,
                              MonotonicDescriptor &Desc, ScalarEvolution &SE);
 
-  /// Returns true if \p Val is a monotonic variable in the loop \p L (in this
-  /// case, the value should transitively contain monotonic PHI as the only
-  /// loop-variant part/operand of its calculation).
-  static bool isMonotonicVal(Value *Val, const Loop *L,
-                             MonotonicDescriptor &Desc, ScalarEvolution &SE);
-
 private:
   /// The PHIs that feed into the backedge update of the monotonic PHI.
   SmallPtrSet<PHINode *, 1> Chain;
+
+  /// Memory operations whose addresses are derived from this monotonic PHI.
+  DenseMap<Instruction *, const SCEV *> CompressedMemOps;
 
   /// The instruction that updates the value of the monotonic PHI.
   Instruction *StepInst = nullptr;
@@ -540,15 +544,26 @@ private:
   /// Note: StepInstBlock = StepInst->getParent().
   Edge PredEdge = {};
 
-  /// Expression that represents the monotonic PHI (isMonotonicPHI) or monotonic
-  /// (isMonotonicVal). Within the expression, the conditional update is
-  /// represented as an (unconditional) SCEVAddRec.
+  /// Expression that represents the monotonic PHI. Within the expression, the
+  /// conditional update is represented as an (unconditional) SCEVAddRec.
   const SCEVAddRecExpr *Expr = nullptr;
 
-  /// Set the SCEV expression for this descriptor. Returns true if the
-  /// expression was successfully updated, this requires \p NewExpr must be an
-  /// affine SCEVAddRec.
-  bool setIfAffineAddRec(const SCEV *NewExpr);
+  /// Verifies \p PN is a monotonic PHI and collects the PHIs within the chain.
+  /// Returns the StepInst, PHI SCEV expression, and the predicated edge.
+  static std::pair<Instruction *, const SCEV *>
+  CollectMonotonicPHIChain(PHINode *PN, const Loop *L, PHINode *BackEdgeInst,
+                           SmallPtrSetImpl<PHINode *> &Chain, Edge &PredEdge,
+                           ScalarEvolution &SE);
+
+  /// Collects the memory operations whose addresses are derived from \p PN.
+  /// The memory operations and SCEV expressions for their pointer operands are
+  /// placed in \p CompressedMemOps. Returns true if no unexpected users of \p
+  /// PN were found.
+  static bool CollectCompressedMemOpUsers(
+      PHINode *PN, const Loop *L, Edge PredEdge,
+      const SmallPtrSetImpl<PHINode *> &Chain, const SCEV *PhiSCEV,
+      ScalarEvolution &SE,
+      DenseMap<Instruction *, const SCEV *> &CompressedMemOps);
 };
 
 } // end namespace llvm

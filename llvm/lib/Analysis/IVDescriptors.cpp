@@ -1697,12 +1697,12 @@ bool InductionDescriptor::isInductionPHI(
   return true;
 }
 
-bool MonotonicDescriptor::setIfAffineAddRec(const SCEV *NewExpr) {
-  auto *AddRec = dyn_cast<SCEVAddRecExpr>(NewExpr);
-  if (!AddRec || !AddRec->isAffine())
-    return false;
-  Expr = AddRec;
-  return true;
+static bool hasUniqueLoopVariantOperand(Value *Cur, Instruction *I,
+                                        const Loop *L) {
+  auto LoopVariantOp = [&](Value *V, bool /*AllowRepeats*/) -> Value * {
+    return L->isLoopInvariant(V) ? nullptr : V;
+  };
+  return find_singleton<Value>(I->operands(), LoopVariantOp) == Cur;
 }
 
 // Recognize monotonic phi variable by matching the following pattern:
@@ -1732,21 +1732,15 @@ bool MonotonicDescriptor::setIfAffineAddRec(const SCEV *NewExpr) {
 //   %chain_phi0 = phi [ %monotonic_phi, %pred0 ], [ %chain_phi1, %bb1 ]
 //   br label %loop_header
 //
-// For this pattern, monotonic phi is described by {%start, +, %step} recurrence
-// and predicate is CFG edge %step_bb -> %bbN.
-bool MonotonicDescriptor::isMonotonicPHI(PHINode *PN, const Loop *L,
-                                         MonotonicDescriptor &Desc,
-                                         ScalarEvolution &SE) {
-  if (!PN->getType()->isIntOrPtrTy() || PN->getParent() != L->getHeader())
-    return false;
-  auto *BackEdgeInst =
-      dyn_cast<PHINode>(PN->getIncomingValueForBlock(L->getLoopLatch()));
-  if (!BackEdgeInst)
-    return false;
-
-  Edge PredEdge;
+// For this pattern, monotonic phi is described by {%start, +, %step}
+// recurrence and predicate is CFG edge %step_bb -> %bbN.
+std::pair<Instruction *, const SCEV *>
+MonotonicDescriptor::CollectMonotonicPHIChain(PHINode *PN, const Loop *L,
+                                              PHINode *BackEdgeInst,
+                                              SmallPtrSetImpl<PHINode *> &Chain,
+                                              Edge &PredEdge,
+                                              ScalarEvolution &SE) {
   Value *StepOp = nullptr;
-  SmallPtrSet<PHINode *, 1> Chain;
   PHINode *PHIChain = BackEdgeInst;
 
   while (PHIChain) {
@@ -1757,16 +1751,16 @@ bool MonotonicDescriptor::isMonotonicPHI(PHINode *PN, const Loop *L,
       if (Incoming == PN)
         continue;
       if (!Incoming->hasOneUse())
-        return false;
+        return {};
       if (auto *IncomingPHI = dyn_cast<PHINode>(Incoming)) {
         if (NextPHIChain)
-          return false;
+          return {};
         NextPHIChain = IncomingPHI;
         continue;
       }
       // Only one update/step is allowed. The unmodified value must be PN.
       if (StepOp || NextPHIChain)
-        return false;
+        return {};
       PredEdge = Edge{Block, PHIChain->getParent()};
       StepOp = Incoming;
     }
@@ -1775,7 +1769,7 @@ bool MonotonicDescriptor::isMonotonicPHI(PHINode *PN, const Loop *L,
 
   auto *StepInst = dyn_cast_if_present<Instruction>(StepOp);
   if (!StepInst)
-    return false;
+    return {};
 
   // Construct SCEVAddRec for this value.
   Value *Start = PN->getIncomingValueForBlock(L->getLoopPreheader());
@@ -1786,7 +1780,7 @@ bool MonotonicDescriptor::isMonotonicPHI(PHINode *PN, const Loop *L,
           ? match(StepInst, m_PtrAdd(m_Specific(PN), m_Value(Step)))
           : match(StepInst, m_Add(m_Specific(PN), m_Value(Step)));
   if (!StepMatch || !L->isLoopInvariant(Step))
-    return false;
+    return {};
 
   SCEV::NoWrapFlags WrapFlags = SCEV::FlagAnyWrap;
   if (auto *GEP = dyn_cast<GEPOperator>(StepInst)) {
@@ -1803,32 +1797,121 @@ bool MonotonicDescriptor::isMonotonicPHI(PHINode *PN, const Loop *L,
 
   const SCEV *PhiSCEV =
       SE.getAddRecExpr(SE.getSCEV(Start), SE.getSCEV(Step), L, WrapFlags);
-
-  Desc = MonotonicDescriptor(Chain, StepInst, PredEdge, PhiSCEV);
-  return Desc.getExpr() != nullptr;
+  return {StepInst, PhiSCEV};
 }
 
-bool MonotonicDescriptor::isMonotonicVal(Value *Val, const Loop *L,
-                                         MonotonicDescriptor &Desc,
-                                         ScalarEvolution &SE) {
-  if (!Val->getType()->isIntOrPtrTy() || L->isLoopInvariant(Val))
-    return false;
-  auto *CurInst = cast<Instruction>(Val);
+bool MonotonicDescriptor::CollectCompressedMemOpUsers(
+    PHINode *PN, const Loop *L, Edge PredEdge,
+    const SmallPtrSetImpl<PHINode *> &Chain, const SCEV *PhiSCEV,
+    ScalarEvolution &SE,
+    DenseMap<Instruction *, const SCEV *> &CompressedMemOps) {
+  ValueToSCEVMapTy PhiMap{{PN, PhiSCEV}};
 
-  auto LoopVariantVal = [&](Value *V, bool /*AllowRepeats*/) {
-    return L->isLoopInvariant(V) ? nullptr : cast<Instruction>(V);
+  auto GetCompressedPtrSCEV = [&](Instruction *MemI) -> const SCEV * {
+    // Check that the memory operation has the same predicate as the step.
+    // TODO: Relax these restrictions.
+    BasicBlock *AccessBB = MemI->getParent();
+    if (PredEdge != Edge(AccessBB, AccessBB->getUniqueSuccessor()))
+      return nullptr;
+
+    const SCEV *PtrSCEV = SCEVParameterRewriter::rewrite(
+        SE.getSCEV(getLoadStorePointerOperand(MemI)), SE, PhiMap);
+    auto *AddRec = dyn_cast<SCEVAddRecExpr>(PtrSCEV);
+    if (!AddRec || !AddRec->isAffine())
+      return nullptr;
+
+    // Check if pointer step equals access size.
+    SCEVUse Step = AddRec->getStepRecurrence(SE);
+
+    if (Step != SE.getSizeOfExpr(Step->getType(), getLoadStoreType(MemI)))
+      return nullptr;
+
+    return PtrSCEV;
   };
 
-  while (!isa<PHINode>(CurInst)) {
-    CurInst = find_singleton<Instruction>(CurInst->operands(), LoopVariantVal);
-    if (!CurInst)
+  SmallPtrSet<Use *, 16> Seen;
+  SmallVector<Use *> Worklist{make_pointer_range(PN->uses())};
+
+  while (!Worklist.empty()) {
+    Use *U = Worklist.pop_back_val();
+    if (!Seen.insert(U).second)
+      continue;
+
+    auto *I = dyn_cast<Instruction>(U->getUser());
+    if (!I)
+      continue;
+
+    if (isa<LoadInst, StoreInst>(I)) {
+      // Disallow any store using the PN as the stored value.
+      if (auto *SI = dyn_cast<StoreInst>(I);
+          SI && SI->getValueOperand() == U->get())
+        return false;
+
+      const SCEV *CompressedPtr = GetCompressedPtrSCEV(I);
+      if (!CompressedPtr)
+        return false;
+      CompressedMemOps.insert({I, CompressedPtr});
+      continue;
+    }
+
+    // Allow any phi that's part of the phi chain. Ignore it's users as they
+    // should only be other operations in the chain.
+    if (auto *Phi = dyn_cast<PHINode>(I)) {
+      if (Chain.contains(Phi))
+        continue;
       return false;
+    }
+
+    // Non-memory users may use any opcode (select/and/or/etc.), but they must
+    // propagate Cur as their only loop-varying input. That prevents mixing in a
+    // second loop-varying term; GetCompressedPtrSCEV then rewrites the full
+    // leaf pointer SCEV and rejects it unless the entire address still
+    // simplifies to the required affine AddRec.
+    if (I->use_empty() || !hasUniqueLoopVariantOperand(U->get(), I, L))
+      return false;
+    append_range(Worklist, make_pointer_range(I->uses()));
   }
 
-  if (!isMonotonicPHI(cast<PHINode>(CurInst), L, Desc, SE))
+  return true;
+}
+
+bool MonotonicDescriptor::isMonotonicPHI(PHINode *PN, const Loop *L,
+                                         MonotonicDescriptor &Desc,
+                                         ScalarEvolution &SE) {
+  if (!PN->getType()->isIntOrPtrTy() || PN->getParent() != L->getHeader())
+    return false;
+  auto *BackEdgeInst =
+      dyn_cast<PHINode>(PN->getIncomingValueForBlock(L->getLoopLatch()));
+  if (!BackEdgeInst)
     return false;
 
-  ValueToSCEVMapTy Map{{CurInst, Desc.getExpr()}};
-  return Desc.setIfAffineAddRec(
-      SCEVParameterRewriter::rewrite(SE.getSCEV(Val), SE, Map));
+  for (User *U : BackEdgeInst->users()) {
+    auto *UI = dyn_cast<Instruction>(U);
+    if (UI == PN || (UI && !L->contains(UI)))
+      continue;
+    return false;
+  }
+
+  // Only allow the monotonic recurrence to feed the PHI chain or memory
+  // operations addressed by a compressed pointer. Save those memory operations
+  // on the descriptor.
+  Edge PredEdge;
+  SmallPtrSet<PHINode *, 1> Chain;
+  auto [StepInst, PhiSCEV] =
+      CollectMonotonicPHIChain(PN, L, BackEdgeInst, Chain, PredEdge, SE);
+  if (!StepInst)
+    return false;
+
+  const SCEVAddRecExpr *PhiAddRec = dyn_cast<SCEVAddRecExpr>(PhiSCEV);
+  if (!PhiAddRec || !PhiAddRec->isAffine())
+    return false;
+
+  DenseMap<Instruction *, const SCEV *> CompressedMemOps;
+  if (!CollectCompressedMemOpUsers(PN, L, PredEdge, Chain, PhiAddRec, SE,
+                                   CompressedMemOps))
+    return false;
+
+  Desc = MonotonicDescriptor(Chain, CompressedMemOps, StepInst, PredEdge,
+                             PhiAddRec);
+  return true;
 }

@@ -451,6 +451,7 @@ if.then:
   %inc = add nsw i32 %monotonic, 1
   %monotonic.prom = sext i32 %monotonic to i64
   %arrayidx = getelementptr inbounds i32, ptr %dst, i64 %monotonic.prom
+  store i32 10, ptr %arrayidx, align 4
   br label %for.inc
 
 for.inc:
@@ -502,19 +503,13 @@ for.end:
         auto *StepSCEV = SE.getConstant(Phi->getType(), 1);
         EXPECT_EQ(Desc.getExpr(),
                   SE.getAddRecExpr(StartSCEV, StepSCEV, L, SCEV::FlagNW));
-        // Check %arrayidx descriptor.
-        bool IsMonotonicVal =
-            MonotonicDescriptor::isMonotonicVal(GEPInst, L, Desc, SE);
-        EXPECT_TRUE(IsMonotonicVal);
-        // Chain, StepInst and PredicateEdge are the same with %monotonic.
-        auto &ValChain = Desc.getChain();
-        EXPECT_TRUE(ValChain.size() == 1 && ValChain.contains(ChainPhi));
-        EXPECT_EQ(Desc.getStepInst(), StepInst);
-        EXPECT_EQ(Desc.getPredicateEdge(),
-                  MonotonicDescriptor::Edge(IfThen, IfEnd));
+        // Check %arrayidx use.
+        EXPECT_EQ(Desc.getCompressedMemoryOps().size(), 1U);
+        auto [StoreInst, PtrSCEV] = *Desc.getCompressedMemoryOps().begin();
+        EXPECT_EQ(getPointerOperand(StoreInst), GEPInst);
         StartSCEV = SE.getSCEV(F.getArg(0));
         StepSCEV = SE.getConstant(StartSCEV->getType(), 4);
-        EXPECT_EQ(Desc.getExpr(),
+        EXPECT_EQ(PtrSCEV,
                   SE.getAddRecExpr(StartSCEV, StepSCEV, L, SCEV::FlagNW));
       });
 }
