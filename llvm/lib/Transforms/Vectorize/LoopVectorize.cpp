@@ -2918,38 +2918,6 @@ void LoopVectorizationCostModel::collectLoopUniforms(ElementCount VF) {
     AddToWorklistIfAllowed(IndUpdate);
   }
 
-  // Handle monotonic phis (similarly to induction vars).
-  for (const auto &MonotonicPHI : Legal->getMonotonicPHIs()) {
-    auto *Phi = MonotonicPHI.first;
-    auto *PhiUpdate = cast<Instruction>(Phi->getIncomingValueForBlock(Latch));
-    const auto &Desc = MonotonicPHI.second;
-
-    auto UniformPhi = all_of(Phi->users(), [&](User *U) -> bool {
-      auto *I = cast<Instruction>(U);
-      if (I == Desc.getStepInst())
-        return true;
-      if (auto *PN = dyn_cast<PHINode>(I); PN && Desc.getChain().contains(PN))
-        return true;
-      return !TheLoop->contains(I) || Worklist.count(I) ||
-             IsVectorizedMemAccessUse(I, Phi);
-    });
-    if (!UniformPhi)
-      continue;
-
-    auto UniformPhiUpdate = all_of(PhiUpdate->users(), [&](User *U) -> bool {
-      auto *I = cast<Instruction>(U);
-      if (I == Phi)
-        return true;
-      return !TheLoop->contains(I) || Worklist.count(I) ||
-             IsVectorizedMemAccessUse(I, Phi);
-    });
-    if (!UniformPhiUpdate)
-      continue;
-
-    AddToWorklistIfAllowed(Phi);
-    AddToWorklistIfAllowed(PhiUpdate);
-  }
-
   Uniforms[VF].insert_range(Worklist);
 }
 

@@ -5016,15 +5016,6 @@ void VPMonotonicPHIRecipe::printRecipe(raw_ostream &O, const Twine &Indent,
 }
 #endif
 
-InstructionCost VPMonotonicPHIRecipe::computeCost(ElementCount VF,
-                                                  VPCostContext &Ctx) const {
-  auto *Phi = cast<PHINode>(getUnderlyingValue());
-  // The value of a monotonic phi must be uniform across the VF.
-  if (!Ctx.isUniformAfterVectorization(Phi, VF))
-    return InstructionCost::getInvalid();
-  return VPHeaderPHIRecipe::computeCost(VF, Ctx);
-}
-
 void VPWidenPHIRecipe::execute(VPTransformState &State) {
   executePhiRecipe(this, *this, State, /*IsScalar=*/false, Name);
 }

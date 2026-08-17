@@ -477,23 +477,6 @@ int LoopVectorizationLegality::isConsecutivePtr(Type *AccessTy,
   return Stride;
 }
 
-bool LoopVectorizationLegality::isCompressedPtr(Type *AccessTy, Value *Ptr,
-                                                BasicBlock *AccessBB) const {
-  MonotonicDescriptor Desc;
-  if (!MonotonicDescriptor::isMonotonicVal(Ptr, TheLoop, Desc, *PSE.getSE()))
-    return false;
-
-  // Check that the memory operation has the same predicate as the step.
-  // TODO: Relax these restrictions.
-  if (Desc.getPredicateEdge() !=
-      MonotonicDescriptor::Edge(AccessBB, AccessBB->getUniqueSuccessor()))
-    return false;
-
-  // Check if pointer step equals access size.
-  SCEVUse Step = Desc.getExpr()->getStepRecurrence(*PSE.getSE());
-  return Step == PSE.getSE()->getSizeOfExpr(Step->getType(), AccessTy);
-}
-
 bool LoopVectorizationLegality::isInvariant(Value *V) const {
   return LAI->isInvariant(V);
 }
@@ -930,6 +913,9 @@ bool LoopVectorizationLegality::canVectorizeInstr(Instruction &I) {
     if (EnableMonotonicPatterns &&
         MonotonicDescriptor::isMonotonicPHI(Phi, TheLoop, MD, *PSE.getSE())) {
       MonotonicPHIs[Phi] = MD;
+
+      CompressedMemoryOps.insert_range(
+          make_first_range(MD.getCompressedMemoryOps()));
       return true;
     }
 
@@ -1083,21 +1069,6 @@ bool LoopVectorizationLegality::canVectorizeInstr(Instruction &I) {
              !I.isFast()) {
     LLVM_DEBUG(dbgs() << "LV: Found FP op with unsafe algebra.\n");
     Hints->setPotentiallyUnsafe();
-  }
-
-  if (isa<LoadInst, StoreInst>(I)) {
-    Value *Ptr = getLoadStorePointerOperand(&I);
-    Type *AccessTy = getLoadStoreType(&I);
-    if (ConditionallyExecutedOps.contains(&I) &&
-        isCompressedPtr(AccessTy, Ptr, I.getParent())) {
-      if (!EnableMonotonicPatterns) {
-        reportVectorizationFailure(
-            "compressed load/store vectorization not enabled",
-            "CantVectorizeCompressedLoadStore", ORE, TheLoop, &I);
-        return false;
-      }
-      CompressedMemoryOps.insert(&I);
-    }
   }
 
   return true;

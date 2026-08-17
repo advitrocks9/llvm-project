@@ -2990,9 +2990,6 @@ public:
 
   void execute(VPTransformState &State) override;
 
-  InstructionCost computeCost(ElementCount VF,
-                              VPCostContext &Ctx) const override;
-
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   /// Print the recipe.
   void printRecipe(raw_ostream &O, const Twine &Indent,

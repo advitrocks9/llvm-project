@@ -30,10 +30,10 @@ exit:
   ret void
 }
 
-; CHECK: Recipe with invalid costs prevented vectorization at VF=(2, 4): phi
+; CHECK: loop not vectorized: value that could not be identified as reduction is used outside the loop
 
 ; Negative test: Storing the conditionally incremented phi is invalid (as all uses must be uniform).
-define void @test_store_conditionally_incremented_value(ptr writeonly noalias %dst, ptr readonly %src, i32 %c, i64 %n) {
+define void @test_store_conditionally_incremented_value(ptr writeonly noalias %dst, ptr writeonly noalias %dst2, ptr readonly %src, i32 %c, i64 %n) {
 entry:
   br label %for.body
 
