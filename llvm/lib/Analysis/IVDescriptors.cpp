@@ -1835,7 +1835,7 @@ bool MonotonicDescriptor::CollectCompressedMemOpUsers(
     if (isa<LoadInst, StoreInst>(I)) {
       // Disallow any store using the PN as the stored value.
       if (auto *SI = dyn_cast<StoreInst>(I);
-          SI && SI->getValueOperand() == U->get())
+          SI && SI->getValueOperand() == CurrentVal)
         return false;
 
       const SCEV *CompressedPtr = GetCompressedPtrSCEV(I);
