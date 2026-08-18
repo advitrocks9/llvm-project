@@ -147,6 +147,7 @@ bool VPRecipeBase::mayReadFromMemory() const {
   case VPWidenStoreEVLSC:
   case VPWidenStoreSC:
   case VPExpandSCEVSC:
+  case VPMonotonicPHISC:
     return false;
   case VPBlendSC:
   case VPReductionEVLSC:

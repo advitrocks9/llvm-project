@@ -32,7 +32,8 @@ exit:
 
 ; CHECK: loop not vectorized: value that could not be identified as reduction is used outside the loop
 
-; Negative test: Storing the conditionally incremented phi is invalid (as all uses must be uniform).
+; Negative test: Storing the conditionally incremented phi is invalid.
+
 define void @test_store_conditionally_incremented_value(ptr writeonly noalias %dst, ptr writeonly noalias %dst2, ptr readonly %src, i32 %c, i64 %n) {
 entry:
   br label %for.body
@@ -91,4 +92,46 @@ for.inc:
 
 exit:
   ret i32 %idx.1
+}
+
+; CHECK: UserVF ignored because of invalid costs.
+
+; Negative test: In this case the %idx is incremented when %cond.val != 0,
+; but the store occurs when %cond.val > 100. The store mask does not match the
+; PHI mask, so the loop is not vectorized.
+define void @compress_mismatched_mask(ptr noalias %dst, ptr noalias %src, ptr noalias %cond, i64 %n) {
+entry:
+  br label %for.body
+
+for.body:
+  %iv = phi i64 [ 0, %entry ], [ %iv.next, %for.inc ]
+  %idx = phi i64 [ 0, %entry ], [ %idx.next, %for.inc ]
+  %cond.ptr = getelementptr inbounds nuw [4 x i8], ptr %cond, i64 %iv
+  %cond.val = load i32, ptr %cond.ptr, align 4
+  %cond.bool = icmp eq i32 %cond.val, 0
+  br i1 %cond.bool, label %for.inc, label %if.then
+
+if.then:
+  %cmp.cond = icmp sgt i32 %cond.val, 100
+  br i1 %cmp.cond, label %if.then1, label %if.end
+
+if.then1:
+  %src.ptr = getelementptr inbounds nuw [4 x i8], ptr %src, i64 %iv
+  %src.val = load i32, ptr %src.ptr, align 4
+  %dst.ptr = getelementptr inbounds [4 x i8], ptr %dst, i64 %idx
+  store i32 %src.val, ptr %dst.ptr, align 4
+  br label %if.end
+
+if.end:
+  %inc = add nsw i64 %idx, 1
+  br label %for.inc
+
+for.inc:
+  %idx.next = phi i64 [ %inc, %if.end ], [ %idx, %for.body ]
+  %iv.next = add nuw nsw i64 %iv, 1
+  %exitcond.not = icmp eq i64 %iv.next, %n
+  br i1 %exitcond.not, label %exit, label %for.body
+
+exit:
+  ret void
 }
