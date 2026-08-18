@@ -494,11 +494,7 @@ public:
   MonotonicDescriptor(const SmallPtrSetImpl<PHINode *> &Chain,
                       const DenseMap<Value *, const SCEV *> &CompressedPtrs,
                       Instruction *StepInst, const SCEVAddRecExpr *Expr)
-      : Chain(llvm::from_range, Chain), CompressedPtrs(CompressedPtrs),
-        StepInst(StepInst), Expr(Expr) {}
-
-  /// Returns the PHIs that feed into the backedge of the monotonic PHI.
-  const SmallPtrSetImpl<PHINode *> &getChain() const { return Chain; }
+      : CompressedPtrs(CompressedPtrs), StepInst(StepInst), Expr(Expr) {}
 
   // Returns pointers (used by load/store operations) where the address is
   // derived from this monotonic PHI. The keys are pointers, the values are
@@ -522,9 +518,6 @@ public:
                              MonotonicDescriptor &Desc, ScalarEvolution &SE);
 
 private:
-  /// The PHIs that feed into the backedge update of the monotonic PHI.
-  SmallPtrSet<PHINode *, 1> Chain;
-
   /// Pointers whose addresses are derived from this monotonic PHI.
   DenseMap<Value *, const SCEV *> CompressedPtrs;
 
@@ -535,21 +528,25 @@ private:
   /// conditional update is represented as an (unconditional) SCEVAddRec.
   const SCEVAddRecExpr *Expr = nullptr;
 
-  /// Verifies \p PN is a monotonic PHI and collects the PHIs within the chain.
-  /// Returns the StepInst and a SCEV expression for \p PN.
-  static std::pair<Instruction *, const SCEV *>
-  collectMonotonicPHIChain(PHINode *PN, const Loop *L, PHINode *BackEdgeInst,
-                           SmallPtrSetImpl<PHINode *> &Chain,
-                           ScalarEvolution &SE);
+  struct MonotonicPHI {
+    PHINode *HeaderPhi = nullptr;
+    Instruction *StepInst = nullptr;
+    PHINode *BackedgeInst = nullptr;
+    const SCEV *PhiSCEV = nullptr;
+  };
+
+  /// Try to match \p PN as a monotonic PHI. Returns the StepInst and a SCEV
+  /// expression for the PHI if matched, otherwise nullopt.
+  static std::optional<MonotonicPHI>
+  matchMonotonicPHI(PHINode *PN, const Loop *L, ScalarEvolution &SE);
 
   /// Collects pointers values (used by loads/stores) whose addresses are
   /// derived from \p PN. The pointer operands and SCEV expressions for their
   /// pointer operands are placed in \p CompressedPtrs. Returns true if all
   /// users of \p PN were supported memory operations.
   static bool
-  collectAllowedMemoryUses(PHINode *PN, const Loop *L,
-                           const SmallPtrSetImpl<PHINode *> &Chain,
-                           const SCEV *PhiSCEV, ScalarEvolution &SE,
+  collectAllowedMemoryUses(const MonotonicPHI &PhiMatch, const Loop *L,
+                           ScalarEvolution &SE,
                            DenseMap<Value *, const SCEV *> &CompressedPtrs);
 };
 

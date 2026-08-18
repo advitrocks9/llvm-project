@@ -1700,66 +1700,50 @@ bool InductionDescriptor::isInductionPHI(
 // Recognize monotonic phi variable by matching the following pattern:
 // loop_header:
 //   %monotonic_phi = phi [ %start, %preheader ], [ %chain_phi0, %latch ]
-//   br i1 %do_step, label %step_bb, label %bbN
+//   br i1 %do_step, label %step_bb, label %latch
 //
 // step_bb:
 //   %step = add/gep %monotonic_phi, %step_val
-//   br label %bbN
-//
-// bbN:
-//   %chain_phiN = phi [ %monotonic_phi, %loop_header ], [ %step, %step_bb ]
-//   br label %bb(N-1)
-//
-// ...
-//
-// bb2:
-//   %chain_phi2 = phi [ %monotonic_phi, %pred2 ], [ %chain_phi3, %bb3 ]
-//   br label %bb1
-//
-// bb1:
-//   %chain_phi1 = phi [ %monotonic_phi, %pred1 ], [ %chain_phi2, %bb2 ]
 //   br label %latch
 //
 // latch:
-//   %chain_phi0 = phi [ %monotonic_phi, %pred0 ], [ %chain_phi1, %bb1 ]
+//   %chain_phi0 = phi [ %monotonic_phi, %loop_header ], [ %step, %step_bb ]
 //   br label %loop_header
 //
 // For this pattern, monotonic phi is described by {%start, +, %step}
-// recurrence and predicate is CFG edge %step_bb -> %bbN.
-std::pair<Instruction *, const SCEV *>
-MonotonicDescriptor::collectMonotonicPHIChain(PHINode *PN, const Loop *L,
-                                              PHINode *BackEdgeInst,
-                                              SmallPtrSetImpl<PHINode *> &Chain,
-                                              ScalarEvolution &SE) {
-  Value *StepOp = nullptr;
-  PHINode *PHIChain = BackEdgeInst;
+// recurrence and predicate is CFG edge %step_bb -> %latch.
+std::optional<MonotonicDescriptor::MonotonicPHI>
+MonotonicDescriptor::matchMonotonicPHI(PHINode *PN, const Loop *L,
+                                       ScalarEvolution &SE) {
+  if (!PN->getType()->isIntOrPtrTy() || PN->getParent() != L->getHeader())
+    return std::nullopt;
+  auto *BackedgeInst =
+      dyn_cast<PHINode>(PN->getIncomingValueForBlock(L->getLoopLatch()));
+  if (!BackedgeInst)
+    return std::nullopt;
 
-  while (PHIChain) {
-    Chain.insert(PHIChain);
-    PHINode *NextPHIChain = nullptr;
-    for (auto [Block, Incoming] :
-         zip_equal(PHIChain->blocks(), PHIChain->incoming_values())) {
-      if (Incoming == PN)
-        continue;
-      if (!Incoming->hasOneUse())
-        return {};
-      if (auto *IncomingPHI = dyn_cast<PHINode>(Incoming)) {
-        if (NextPHIChain)
-          return {};
-        NextPHIChain = IncomingPHI;
-        continue;
-      }
-      // Only one update/step is allowed. The unmodified value must be PN.
-      if (StepOp || NextPHIChain)
-        return {};
-      StepOp = Incoming;
-    }
-    PHIChain = NextPHIChain;
+  // Ensure the only user of the backedge are out of the loop or the PN.
+  for (User *U : BackedgeInst->users()) {
+    auto *UI = dyn_cast<Instruction>(U);
+    if (UI == PN || (UI && !L->contains(UI)))
+      continue;
+    return std::nullopt;
+  }
+
+  // Find the StepOp (that increments PN). TODO: Support chains of phis.
+  Value *StepOp = nullptr;
+  for (auto [Block, Incoming] :
+       zip_equal(BackedgeInst->blocks(), BackedgeInst->incoming_values())) {
+    if (Incoming == PN)
+      continue;
+    if (!Incoming->hasOneUse())
+      return {};
+    StepOp = Incoming;
   }
 
   auto *StepInst = dyn_cast_if_present<Instruction>(StepOp);
   if (!StepInst)
-    return {};
+    return std::nullopt;
 
   Value *Start = PN->getIncomingValueForBlock(L->getLoopPreheader());
 
@@ -1786,14 +1770,13 @@ MonotonicDescriptor::collectMonotonicPHIChain(PHINode *PN, const Loop *L,
 
   const SCEV *PhiSCEV =
       SE.getAddRecExpr(SE.getSCEV(Start), SE.getSCEV(Step), L, WrapFlags);
-  return {StepInst, PhiSCEV};
+  return MonotonicPHI{PN, StepInst, BackedgeInst, PhiSCEV};
 }
 
 bool MonotonicDescriptor::collectAllowedMemoryUses(
-    PHINode *PN, const Loop *L, const SmallPtrSetImpl<PHINode *> &Chain,
-    const SCEV *PhiSCEV, ScalarEvolution &SE,
+    const MonotonicPHI &Match, const Loop *L, ScalarEvolution &SE,
     DenseMap<Value *, const SCEV *> &CompressedPtrs) {
-  ValueToSCEVMapTy PhiMap{{PN, PhiSCEV}};
+  ValueToSCEVMapTy PhiMap{{Match.HeaderPhi, Match.PhiSCEV}};
 
   auto GetCompressedPtrSCEV = [&](Value *Ptr, Type *AccessTy) -> const SCEV * {
     const SCEV *PtrSCEV =
@@ -1811,16 +1794,15 @@ bool MonotonicDescriptor::collectAllowedMemoryUses(
   };
 
   SmallPtrSet<Use *, 16> Seen;
-  SmallVector<Use *> Worklist{make_pointer_range(PN->uses())};
-
+  SmallVector<Use *> Worklist{make_pointer_range(Match.HeaderPhi->uses())};
   while (!Worklist.empty()) {
     Use *U = Worklist.pop_back_val();
     if (!Seen.insert(U).second)
       continue;
 
-    // Ignore uses outside the loop, these can use a scalar live-out.
+    // Always allow uses outside the loop or by the backedge update.
     auto *I = cast<Instruction>(U->getUser());
-    if (!L->contains(I))
+    if (I == Match.BackedgeInst || !L->contains(I))
       continue;
 
     Value *CurrentVal = U->get();
@@ -1836,14 +1818,6 @@ bool MonotonicDescriptor::collectAllowedMemoryUses(
         return false;
       CompressedPtrs.insert({Ptr, PrtSCEV});
       continue;
-    }
-
-    // Allow any phi that's part of the phi chain. Ignore it's users as they
-    // should only be other operations in the chain.
-    if (auto *Phi = dyn_cast<PHINode>(I)) {
-      if (Chain.contains(Phi))
-        continue;
-      return false;
     }
 
     auto LoopVariantOp = [&](Value *V, bool /*AllowRepeats*/) -> Value * {
@@ -1867,37 +1841,19 @@ bool MonotonicDescriptor::collectAllowedMemoryUses(
 bool MonotonicDescriptor::isMonotonicPHI(PHINode *PN, const Loop *L,
                                          MonotonicDescriptor &Desc,
                                          ScalarEvolution &SE) {
-  if (!PN->getType()->isIntOrPtrTy() || PN->getParent() != L->getHeader())
-    return false;
-  auto *BackEdgeInst =
-      dyn_cast<PHINode>(PN->getIncomingValueForBlock(L->getLoopLatch()));
-  if (!BackEdgeInst)
-    return false;
-
-  for (User *U : BackEdgeInst->users()) {
-    auto *UI = dyn_cast<Instruction>(U);
-    if (UI == PN || (UI && !L->contains(UI)))
-      continue;
-    return false;
-  }
-
-  // Only allow the monotonic recurrence to feed the PHI chain or memory
-  // operations addressed by a compressed pointer. Save those pointers on the
-  // descriptor.
   SmallPtrSet<PHINode *, 1> Chain;
-  auto [StepInst, PhiSCEV] =
-      collectMonotonicPHIChain(PN, L, BackEdgeInst, Chain, SE);
-  if (!StepInst)
+  std::optional<MonotonicPHI> Match = matchMonotonicPHI(PN, L, SE);
+  if (!Match)
     return false;
 
-  const SCEVAddRecExpr *PhiAddRec = dyn_cast<SCEVAddRecExpr>(PhiSCEV);
+  const SCEVAddRecExpr *PhiAddRec = dyn_cast<SCEVAddRecExpr>(Match->PhiSCEV);
   if (!PhiAddRec || !PhiAddRec->isAffine())
     return false;
 
   DenseMap<Value *, const SCEV *> CompressedPtrs;
-  if (!collectAllowedMemoryUses(PN, L, Chain, PhiAddRec, SE, CompressedPtrs))
+  if (!collectAllowedMemoryUses(*Match, L, SE, CompressedPtrs))
     return false;
 
-  Desc = MonotonicDescriptor(Chain, CompressedPtrs, StepInst, PhiAddRec);
+  Desc = MonotonicDescriptor(Chain, CompressedPtrs, Match->StepInst, PhiAddRec);
   return true;
 }
