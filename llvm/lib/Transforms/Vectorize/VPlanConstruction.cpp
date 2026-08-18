@@ -2263,28 +2263,25 @@ bool VPlanTransforms::handleCompressingPatterns(
     if (!MonotonicPhi)
       continue;
 
-    // Obtain the mask for the monotonic phi update from the last VPBlendRecipe
-    // in the chain.
-    VPValue *Chain = MonotonicPhi->getBackedgeValue();
+    // Obtain the mask for the monotonic phi update from the VPBlendRecipe.
+    auto *BlendR = cast<VPBlendRecipe>(MonotonicPhi->getBackedgeValue());
     VPValue *Mask = nullptr;
-    while (auto *BlendR = dyn_cast<VPBlendRecipe>(Chain))
-      for (unsigned I = 0, E = BlendR->getNumIncomingValues(); I != E; ++I)
-        if (auto *IncomingVal = BlendR->getIncomingValue(I);
-            IncomingVal != MonotonicPhi) {
-          Chain = IncomingVal;
-          Mask = BlendR->getMask(I);
-          break;
-        }
+    for (unsigned I = 0, E = BlendR->getNumIncomingValues(); I != E; ++I)
+      if (auto *IncomingVal = BlendR->getIncomingValue(I);
+          IncomingVal != MonotonicPhi) {
+        Mask = BlendR->getMask(I);
+        break;
+      }
     assert(Mask);
 
-    auto &Desc = MonotonicPhi->getDescriptor();
+    auto &MD = MonotonicPhi->getDescriptor();
 
     // Replace all "compressed" loads and stores with expandload and
     // compressstore respectively.
     for (VPInstruction *&VPI : MemOps) {
       Instruction *I = VPI->getUnderlyingInstr();
       Value *Ptr = getLoadStorePointerOperand(I);
-      if (!Desc.getCompressedPtrs().contains(Ptr))
+      if (!MD.getCompressedPtrs().contains(Ptr))
         continue;
 
       // Bail out if the mask for the memory op does not match the condition
@@ -2312,7 +2309,7 @@ bool VPlanTransforms::handleCompressingPatterns(
     // in the mask.
     auto &SE = *PSE.getSE();
     auto *Step = vputils::getOrCreateVPValueForSCEVExpr(
-        Plan, Desc.getExpr()->getStepRecurrence(SE));
+        Plan, MD.getExpr()->getStepRecurrence(SE));
 
     auto *BackedgeVal = MonotonicPhi->getIncomingValue(1);
     auto *InsertBlock = BackedgeVal->getDefiningRecipe()->getParent();
