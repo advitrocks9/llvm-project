@@ -2217,6 +2217,123 @@ bool VPlanTransforms::handleMultiUseReductions(VPlan &Plan,
   return true;
 }
 
+static VPRecipeBase *widenToExpandloadOrCompressStore(VPBuilder &Builder,
+                                                      VPInstruction *VPI,
+                                                      VPlan &Plan) {
+  VPValue *Mask = VPI->getMask();
+  Instruction *I = VPI->getUnderlyingInstr();
+  Type *AccessTy = getLoadStoreType(I);
+  Align Alignment = getLoadStoreAlignment(I);
+
+  VPValue *Ptr = VPI->getOpcode() == Instruction::Load ? VPI->getOperand(0)
+                                                       : VPI->getOperand(1);
+  Ptr = Builder.createConsecutiveVectorPointer(Ptr, AccessTy,
+                                               /*Reverse=*/false,
+                                               VPI->getDebugLoc());
+
+  if (VPI->getOpcode() == Instruction::Load)
+    return new VPWidenMemIntrinsicRecipe(
+        Intrinsic::masked_expandload, {Ptr, Mask, Plan.getPoison(AccessTy)},
+        AccessTy, Alignment, *VPI, I->getDebugLoc());
+
+  VPValue *StoredValue = VPI->getOperand(0);
+  return new VPWidenMemIntrinsicRecipe(Intrinsic::masked_compressstore,
+                                       {StoredValue, Ptr, Mask}, AccessTy,
+                                       Alignment, *VPI, I->getDebugLoc());
+}
+
+bool VPlanTransforms::handleCompressingPatterns(
+    VPlan &Plan, VPBasicBlock *HeaderVPBB, PredicatedScalarEvolution &PSE) {
+  SmallDenseMap<const Instruction *, VPInstruction *> VPMemOps;
+  for (VPBasicBlock *VPBB :
+       VPBlockUtils::blocksOnly<VPBasicBlock>(vp_depth_first_shallow(
+           Plan.getVectorLoopRegion()->getEntryBasicBlock()))) {
+    for (VPRecipeBase &R : *VPBB) {
+      auto *VPI = dyn_cast<VPInstruction>(&R);
+      if (VPI && VPI->getUnderlyingValue() &&
+          is_contained({Instruction::Load, Instruction::Store},
+                       VPI->getOpcode()))
+        VPMemOps.insert({VPI->getUnderlyingInstr(), VPI});
+    }
+  }
+
+  VPBuilder Builder;
+  for (VPRecipeBase &R : HeaderVPBB->phis()) {
+    auto *MonotonicPhi = dyn_cast<VPMonotonicPHIRecipe>(&R);
+    if (!MonotonicPhi)
+      continue;
+
+    // Obtain the mask for the monotonic phi update from the last VPBlendRecipe
+    // in the chain.
+    VPValue *Chain = MonotonicPhi->getBackedgeValue();
+    VPValue *Mask = nullptr;
+    while (auto *BlendR = dyn_cast<VPBlendRecipe>(Chain))
+      for (unsigned I = 0, E = BlendR->getNumIncomingValues(); I != E; ++I)
+        if (auto *IncomingVal = BlendR->getIncomingValue(I);
+            IncomingVal != MonotonicPhi) {
+          Chain = IncomingVal;
+          Mask = BlendR->getMask(I);
+          break;
+        }
+    assert(Mask);
+
+    auto &Desc = MonotonicPhi->getDescriptor();
+
+    // Replace all "compressed" loads and stores with expandload and
+    // compressstore respectively.
+    for (Instruction *MemOp : make_first_range(Desc.getCompressedMemoryOps())) {
+      auto It = VPMemOps.find(MemOp);
+      if (It == VPMemOps.end())
+        return false;
+
+      VPInstruction *VPI = It->second;
+      VPValue *MemOpMask = VPI->getMask();
+
+      // Bail out if the mask for the memory op does not match the condition
+      // used to update the montontic phi.
+      if (MemOpMask != Mask)
+        return false;
+
+      Builder.setInsertPoint(VPI);
+      VPRecipeBase *Compressed =
+          Builder.insert(widenToExpandloadOrCompressStore(Builder, VPI, Plan));
+
+      if (VPI->getOpcode() == Instruction::Load)
+        VPI->replaceAllUsesWith(Compressed->getVPSingleValue());
+      VPI->eraseFromParent();
+    }
+
+    // Update the montontic phi to increment by the number of active lanes in
+    // the mask.
+    auto &SE = *PSE.getSE();
+    auto *Step = vputils::getOrCreateVPValueForSCEVExpr(
+        Plan, Desc.getExpr()->getStepRecurrence(SE));
+
+    auto *BackedgeVal = MonotonicPhi->getIncomingValue(1);
+    auto *InsertBlock = BackedgeVal->getDefiningRecipe()->getParent();
+    Builder.setInsertPoint(InsertBlock, InsertBlock->getFirstNonPhi());
+
+    Type *UpdateType = MonotonicPhi->getScalarType();
+    if (UpdateType->isPointerTy())
+      UpdateType = Plan.getDataLayout().getIndexType(UpdateType);
+
+    auto *HandledLanes = Builder.createNaryOp(
+        VPInstruction::NumActiveLanes, {Mask}, nullptr, {}, {},
+        DebugLoc::getUnknown(), "handled.lanes", UpdateType);
+    VPValue *Offset =
+        Builder.createOverflowingOp(Instruction::Mul, {Step, HandledLanes});
+    VPValue *Update;
+    if (MonotonicPhi->getScalarType()->isPointerTy())
+      Update = Builder.createPtrAdd(MonotonicPhi, Offset);
+    else
+      Update = Builder.createAdd(MonotonicPhi, Offset, {}, "monotonic.add");
+
+    BackedgeVal->replaceAllUsesWith(Update);
+  }
+
+  return true;
+}
+
 void VPlanTransforms::attachAliasMaskToHeaderMask(VPlan &Plan) {
   VPRegionBlock *LoopRegion = Plan.getVectorLoopRegion();
   VPValue *HeaderMask = LoopRegion->getHeaderMask();

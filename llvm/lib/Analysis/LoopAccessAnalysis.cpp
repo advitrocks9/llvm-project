@@ -1280,6 +1280,19 @@ static void findForkedSCEVs(
   }
 }
 
+// Conservatively replace SCEV of Ptr value if it can't be computed directly,
+// e.g. for monotonic values (they can be treated as affine AddRecs that are
+// updated under some predicate).
+static const SCEV *
+replacePtrSCEV(PredicatedScalarEvolution &PSE, Value *Ptr,
+               const DenseMap<Value *, const SCEV *> &StridesMap,
+               const DenseMap<Value *, const SCEV *> &MonotonicPtrs) {
+  auto MonotonicIt = MonotonicPtrs.find(Ptr);
+  if (MonotonicIt != MonotonicPtrs.end())
+    return MonotonicIt->second;
+  return replaceSymbolicStrideSCEV(PSE, StridesMap, Ptr);
+}
+
 bool AccessAnalysis::createCheckForAccess(
     RuntimePointerChecking &RtCheck, MemAccessInfo Access, Type *AccessTy,
     const DenseMap<Value *, const SCEV *> &StridesMap,
@@ -1672,8 +1685,9 @@ void AccessAnalysis::buildDependenceSets() {
 std::optional<int64_t> llvm::getPtrStride(
     PredicatedScalarEvolution &PSE, Type *AccessTy, Value *Ptr, const Loop *Lp,
     const DominatorTree &DT, const DenseMap<Value *, const SCEV *> &StridesMap,
-    bool ShouldCheckWrap, SmallVectorImpl<const SCEVPredicate *> *Predicates) {
-  const SCEV *PtrScev = replaceSymbolicStrideSCEV(PSE, StridesMap, Ptr);
+    bool ShouldCheckWrap, SmallVectorImpl<const SCEVPredicate *> *Predicates,
+    const DenseMap<Value *, const SCEV *> &MonotonicPtrs) {
+  const SCEV *PtrScev = replacePtrSCEV(PSE, Ptr, StridesMap, MonotonicPtrs);
   if (PSE.getSE()->isLoopInvariant(PtrScev, Lp))
     return 0;
 

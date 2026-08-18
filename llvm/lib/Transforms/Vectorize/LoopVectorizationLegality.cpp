@@ -467,9 +467,19 @@ int LoopVectorizationLegality::isConsecutivePtr(Type *AccessTy,
   const auto &Strides = LAI && AllowRuntimeSCEVChecks
                             ? LAI->getSymbolicStrides()
                             : DenseMap<Value *, const SCEV *>();
+
+  // Collect monotoic ptrs to compute a conservative stride.
+  // FIXME: LAI should collect the monotonic pointers internally (as it needs
+  // them to compute array bounds).
+  DenseMap<Value *, const SCEV *> MonotonicPtrs;
+  for (const MonotonicDescriptor &MD : getMonotonicPHIs().values())
+    for (auto [I, PtrSCEV] : MD.getCompressedMemoryOps())
+      MonotonicPtrs.insert({getLoadStorePointerOperand(I), PtrSCEV});
+
   SmallVector<const SCEVPredicate *> Predicates;
   int Stride = getPtrStride(PSE, AccessTy, Ptr, TheLoop, *DT, Strides, false,
-                            AllowRuntimeSCEVChecks ? &Predicates : nullptr)
+                            AllowRuntimeSCEVChecks ? &Predicates : nullptr,
+                            MonotonicPtrs)
                    .value_or(0);
   if (Stride != 1 && Stride != -1)
     return 0;
@@ -913,9 +923,6 @@ bool LoopVectorizationLegality::canVectorizeInstr(Instruction &I) {
     if (EnableMonotonicPatterns &&
         MonotonicDescriptor::isMonotonicPHI(Phi, TheLoop, MD, *PSE.getSE())) {
       MonotonicPHIs[Phi] = MD;
-
-      CompressedMemoryOps.insert_range(
-          make_first_range(MD.getCompressedMemoryOps()));
       return true;
     }
 

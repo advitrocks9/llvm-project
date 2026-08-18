@@ -2661,8 +2661,8 @@ LoopVectorizationCostModel::memoryInstructionCanBeWidened(Instruction *I,
 
   // In order to be widened, the pointer should be consecutive or compressed.
   int Stride = Legal->isConsecutivePtr(ScalarTy, Ptr);
-  if (!Stride && Legal->isCompressedLoadOrStore(I))
-    Stride = 1;
+  assert((Stride == 1 || !Legal->isCompressedLoadOrStore(I)) &&
+         "Compressed memory ops must be consecutive");
 
   if (!Stride)
     return std::nullopt;
@@ -6402,36 +6402,6 @@ VPHistogramRecipe *VPRecipeBuilder::widenIfHistogram(VPInstruction *VPI) {
                                VPI->getDebugLoc());
 }
 
-VPWidenMemIntrinsicRecipe *
-VPRecipeBuilder::widenIfCompressedMemoryOp(VPInstruction *VPI) {
-  Instruction *I = VPI->getUnderlyingInstr();
-  if (!Legal->isCompressedLoadOrStore(I))
-    return nullptr;
-
-  VPBuilder::InsertPointGuard Guard(Builder);
-  Builder.setInsertPoint(VPI);
-
-  VPValue *Mask = VPI->getMask();
-  Type *AccessTy = getLoadStoreType(I);
-  Align Alignment = getLoadStoreAlignment(I);
-
-  VPValue *Ptr = VPI->getOpcode() == Instruction::Load ? VPI->getOperand(0)
-                                                       : VPI->getOperand(1);
-  Ptr = Builder.createConsecutiveVectorPointer(Ptr, AccessTy,
-                                               /*Reverse=*/false,
-                                               VPI->getDebugLoc());
-
-  if (VPI->getOpcode() == Instruction::Load)
-    return new VPWidenMemIntrinsicRecipe(
-        Intrinsic::masked_expandload, {Ptr, Mask, Plan.getPoison(AccessTy)},
-        AccessTy, Alignment, *VPI, I->getDebugLoc());
-
-  VPValue *StoredValue = VPI->getOperand(0);
-  return new VPWidenMemIntrinsicRecipe(Intrinsic::masked_compressstore,
-                                       {StoredValue, Ptr, Mask}, AccessTy,
-                                       Alignment, *VPI, I->getDebugLoc());
-}
-
 bool VPRecipeBuilder::replaceWithFinalIfReductionStore(
     VPInstruction *VPI, VPBuilder &FinalRedStoresBuilder) {
   StoreInst *SI;
@@ -6815,6 +6785,10 @@ VPlanPtr LoopVectorizationPlanner::tryToBuildVPlan(VPlanPtr Plan,
   ReversePostOrderTraversal<VPBlockShallowTraversalWrapper<VPBlockBase *>> RPOT(
       HeaderVPBB);
 
+  if (!RUN_VPLAN_PASS(VPlanTransforms::handleCompressingPatterns, *Plan,
+                      HeaderVPBB, PSE))
+    return nullptr;
+
   RUN_VPLAN_PASS(VPlanTransforms::createInLoopReductionRecipes, *Plan,
                  Range.Start);
 
@@ -6888,9 +6862,6 @@ VPlanPtr LoopVectorizationPlanner::tryToBuildVPlan(VPlanPtr Plan,
   // Transform initial VPlan: Apply previously taken decisions, in order, to
   // bring the VPlan to its final state.
   // ---------------------------------------------------------------------------
-
-  RUN_VPLAN_PASS(VPlanTransforms::adjustMonotonicPhiBackedgeUsers, *Plan,
-                 HeaderVPBB, PSE);
 
   addReductionResultComputation(Plan, RecipeBuilder, Range.Start);
 
