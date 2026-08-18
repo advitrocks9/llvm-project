@@ -502,9 +502,9 @@ for.end:
         EXPECT_EQ(Desc.getExpr(),
                   SE.getAddRecExpr(StartSCEV, StepSCEV, L, SCEV::FlagNW));
         // Check %arrayidx use.
-        EXPECT_EQ(Desc.getCompressedMemoryOps().size(), 1U);
-        auto [StoreInst, PtrSCEV] = *Desc.getCompressedMemoryOps().begin();
-        EXPECT_EQ(getPointerOperand(StoreInst), GEPInst);
+        EXPECT_EQ(Desc.getCompressedPtrs().size(), 1U);
+        auto [StorePtr, PtrSCEV] = *Desc.getCompressedPtrs().begin();
+        EXPECT_EQ(StorePtr, GEPInst);
         StartSCEV = SE.getSCEV(F.getArg(0));
         StepSCEV = SE.getConstant(StartSCEV->getType(), 4);
         EXPECT_EQ(PtrSCEV,
