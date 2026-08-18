@@ -2281,7 +2281,7 @@ bool VPlanTransforms::handleCompressingPatterns(
 
     // Replace all "compressed" loads and stores with expandload and
     // compressstore respectively.
-    for (VPInstruction *VPI : MemOps) {
+    for (VPInstruction *&VPI : MemOps) {
       Instruction *I = VPI->getUnderlyingInstr();
       Value *Ptr = getLoadStorePointerOperand(I);
       if (!Desc.getCompressedPtrs().contains(Ptr))
@@ -2300,10 +2300,16 @@ bool VPlanTransforms::handleCompressingPatterns(
       if (VPI->getOpcode() == Instruction::Load)
         VPI->replaceAllUsesWith(Compressed->getVPSingleValue());
       VPI->eraseFromParent();
+      VPI = nullptr; // Mark handled instructions with a nullptr.
     }
 
-    // Update the montontic phi to increment by the number of active lanes in
-    // the mask.
+    // Remove all memory operations we've handled.
+    MemOps.erase(
+        remove_if(MemOps, [](VPInstruction *VPI) { return VPI == nullptr; }),
+        MemOps.end());
+
+    // Update the montontic phi to increment by the number of active lanes
+    // in the mask.
     auto &SE = *PSE.getSE();
     auto *Step = vputils::getOrCreateVPValueForSCEVExpr(
         Plan, Desc.getExpr()->getStepRecurrence(SE));
