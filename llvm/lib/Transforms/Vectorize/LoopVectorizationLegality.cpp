@@ -470,14 +470,12 @@ int LoopVectorizationLegality::isConsecutivePtr(Type *AccessTy,
 
   // Check if the pointer is derived from a a monotonic PHI. If so, return a
   // conservative stride (assuming the PHI is always updated).
-  DenseMap<Value *, const SCEV *> MonotonicPtrs;
   for (const MonotonicDescriptor &MD : getMonotonicPHIs().values()) {
-    auto It = MD.getCompressedPtrs().find(Ptr);
-    if (It != MD.getCompressedPtrs().end()) {
-      auto *PtrSCEV = cast<SCEVAddRecExpr>(It->second);
-      return getStrideFromAddRec(PtrSCEV, TheLoop, AccessTy, Ptr, PSE)
+    const SCEV *PtrSCEV = MD.getCompressedPtrs().lookup(Ptr);
+    if (PtrSCEV)
+      return getStrideFromAddRec(cast<SCEVAddRecExpr>(PtrSCEV), TheLoop,
+                                 AccessTy, Ptr, PSE)
           .value_or(0);
-    }
   }
 
   SmallVector<const SCEVPredicate *> Predicates;
