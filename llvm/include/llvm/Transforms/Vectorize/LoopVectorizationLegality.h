@@ -487,8 +487,10 @@ public:
   /// Returns true if \p I is a compressed load or store (which can map to a
   /// llvm.masked.expandload or llvm.masked.compressstore).
   bool isCompressedLoadOrStore(const Instruction *I) const {
+    if (!isa<LoadInst, StoreInst>(I))
+      return false;
     for (const MonotonicDescriptor &MD : MonotonicPHIs.values())
-      if (MD.getCompressedMemoryOps().contains(I))
+      if (MD.getCompressedPtrs().contains(getLoadStorePointerOperand(I)))
         return true;
     return false;
   }

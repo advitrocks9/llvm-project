@@ -908,9 +908,7 @@ getPtrStride(PredicatedScalarEvolution &PSE, Type *AccessTy, Value *Ptr,
              const DenseMap<Value *, const SCEV *> &StridesMap =
                  DenseMap<Value *, const SCEV *>(),
              bool ShouldCheckWrap = true,
-             SmallVectorImpl<const SCEVPredicate *> *Predicates = nullptr,
-             const DenseMap<Value *, const SCEV *> &MonotonicPtrs =
-                 DenseMap<Value *, const SCEV *>());
+             SmallVectorImpl<const SCEVPredicate *> *Predicates = nullptr);
 
 /// Overload of \ref getPtrStride that adds the no-wrap predicates directly to
 /// \p PSE. The \p Assume parameter indicates whether such additional run-time

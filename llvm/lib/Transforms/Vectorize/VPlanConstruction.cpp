@@ -2244,7 +2244,7 @@ static VPRecipeBase *widenToExpandloadOrCompressStore(VPBuilder &Builder,
 
 bool VPlanTransforms::handleCompressingPatterns(
     VPlan &Plan, VPBasicBlock *HeaderVPBB, PredicatedScalarEvolution &PSE) {
-  SmallDenseMap<const Instruction *, VPInstruction *> VPMemOps;
+  SmallVector<VPInstruction *> MemOps;
   for (VPBasicBlock *VPBB :
        VPBlockUtils::blocksOnly<VPBasicBlock>(vp_depth_first_shallow(
            Plan.getVectorLoopRegion()->getEntryBasicBlock()))) {
@@ -2253,7 +2253,7 @@ bool VPlanTransforms::handleCompressingPatterns(
       if (VPI && VPI->getUnderlyingValue() &&
           is_contained({Instruction::Load, Instruction::Store},
                        VPI->getOpcode()))
-        VPMemOps.insert({VPI->getUnderlyingInstr(), VPI});
+        MemOps.push_back(VPI);
     }
   }
 
@@ -2281,16 +2281,15 @@ bool VPlanTransforms::handleCompressingPatterns(
 
     // Replace all "compressed" loads and stores with expandload and
     // compressstore respectively.
-    for (Instruction *MemOp : make_first_range(Desc.getCompressedMemoryOps())) {
-      auto It = VPMemOps.find(MemOp);
-      if (It == VPMemOps.end())
-        return false;
-
-      VPInstruction *VPI = It->second;
-      VPValue *MemOpMask = VPI->getMask();
+    for (VPInstruction *VPI : MemOps) {
+      Instruction *I = VPI->getUnderlyingInstr();
+      Value *Ptr = getLoadStorePointerOperand(I);
+      if (!Desc.getCompressedPtrs().contains(Ptr))
+        continue;
 
       // Bail out if the mask for the memory op does not match the condition
       // used to update the montontic phi.
+      VPValue *MemOpMask = VPI->getMask();
       if (MemOpMask != Mask)
         return false;
 
