@@ -538,19 +538,19 @@ private:
   /// Verifies \p PN is a monotonic PHI and collects the PHIs within the chain.
   /// Returns the StepInst and a SCEV expression for \p PN.
   static std::pair<Instruction *, const SCEV *>
-  CollectMonotonicPHIChain(PHINode *PN, const Loop *L, PHINode *BackEdgeInst,
+  collectMonotonicPHIChain(PHINode *PN, const Loop *L, PHINode *BackEdgeInst,
                            SmallPtrSetImpl<PHINode *> &Chain,
                            ScalarEvolution &SE);
 
   /// Collects pointers values (used by loads/stores) whose addresses are
   /// derived from \p PN. The pointer operands and SCEV expressions for their
-  /// pointer operands are placed in \p CompressedPtrs. Returns true if no
-  /// unexpected users of \p PN were found.
+  /// pointer operands are placed in \p CompressedPtrs. Returns true if all
+  /// users of \p PN were supported memory operations.
   static bool
-  CollectCompressedPointers(PHINode *PN, const Loop *L,
-                            const SmallPtrSetImpl<PHINode *> &Chain,
-                            const SCEV *PhiSCEV, ScalarEvolution &SE,
-                            DenseMap<Value *, const SCEV *> &CompressedPtrs);
+  collectAllowedMemoryUses(PHINode *PN, const Loop *L,
+                           const SmallPtrSetImpl<PHINode *> &Chain,
+                           const SCEV *PhiSCEV, ScalarEvolution &SE,
+                           DenseMap<Value *, const SCEV *> &CompressedPtrs);
 };
 
 } // end namespace llvm

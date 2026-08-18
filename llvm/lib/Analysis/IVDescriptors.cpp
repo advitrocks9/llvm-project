@@ -1727,7 +1727,7 @@ bool InductionDescriptor::isInductionPHI(
 // For this pattern, monotonic phi is described by {%start, +, %step}
 // recurrence and predicate is CFG edge %step_bb -> %bbN.
 std::pair<Instruction *, const SCEV *>
-MonotonicDescriptor::CollectMonotonicPHIChain(PHINode *PN, const Loop *L,
+MonotonicDescriptor::collectMonotonicPHIChain(PHINode *PN, const Loop *L,
                                               PHINode *BackEdgeInst,
                                               SmallPtrSetImpl<PHINode *> &Chain,
                                               ScalarEvolution &SE) {
@@ -1789,7 +1789,7 @@ MonotonicDescriptor::CollectMonotonicPHIChain(PHINode *PN, const Loop *L,
   return {StepInst, PhiSCEV};
 }
 
-bool MonotonicDescriptor::CollectCompressedPointers(
+bool MonotonicDescriptor::collectAllowedMemoryUses(
     PHINode *PN, const Loop *L, const SmallPtrSetImpl<PHINode *> &Chain,
     const SCEV *PhiSCEV, ScalarEvolution &SE,
     DenseMap<Value *, const SCEV *> &CompressedPtrs) {
@@ -1883,7 +1883,7 @@ bool MonotonicDescriptor::isMonotonicPHI(PHINode *PN, const Loop *L,
   // descriptor.
   SmallPtrSet<PHINode *, 1> Chain;
   auto [StepInst, PhiSCEV] =
-      CollectMonotonicPHIChain(PN, L, BackEdgeInst, Chain, SE);
+      collectMonotonicPHIChain(PN, L, BackEdgeInst, Chain, SE);
   if (!StepInst)
     return false;
 
@@ -1892,7 +1892,7 @@ bool MonotonicDescriptor::isMonotonicPHI(PHINode *PN, const Loop *L,
     return false;
 
   DenseMap<Value *, const SCEV *> CompressedPtrs;
-  if (!CollectCompressedPointers(PN, L, Chain, PhiAddRec, SE, CompressedPtrs))
+  if (!collectAllowedMemoryUses(PN, L, Chain, PhiAddRec, SE, CompressedPtrs))
     return false;
 
   Desc = MonotonicDescriptor(Chain, CompressedPtrs, StepInst, PhiAddRec);
