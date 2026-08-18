@@ -497,8 +497,6 @@ for.end:
         auto &PhiChain = Desc.getChain();
         EXPECT_TRUE(PhiChain.size() == 1 && PhiChain.contains(ChainPhi));
         EXPECT_EQ(Desc.getStepInst(), StepInst);
-        EXPECT_EQ(Desc.getPredicateEdge(),
-                  MonotonicDescriptor::Edge(IfThen, IfEnd));
         auto *StartSCEV = SE.getConstant(Phi->getType(), 0);
         auto *StepSCEV = SE.getConstant(Phi->getType(), 1);
         EXPECT_EQ(Desc.getExpr(),
@@ -570,8 +568,6 @@ for.end:
         auto &Chain = Desc.getChain();
         EXPECT_TRUE(Chain.size() == 1 && Chain.contains(ChainPhi));
         EXPECT_EQ(Desc.getStepInst(), StepInst);
-        EXPECT_EQ(Desc.getPredicateEdge(),
-                  MonotonicDescriptor::Edge(IfThen, IfEnd));
         auto *StartSCEV = SE.getSCEV(F.getArg(0));
         auto *StepSCEV = SE.getConstant(StartSCEV->getType(), 4);
         EXPECT_EQ(Desc.getExpr(),

@@ -486,28 +486,24 @@ private:
 /// A struct for saving information about monotonic variables.
 /// Monotonic variable can be considered as a "conditional" induction variable:
 /// its update happens only on loop iterations for which a certain predicate is
-/// satisfied. In this implementation the predicate is represented as an edge in
-/// loop CFG: variable is updated if this edge is executed on current loop
-/// iteration.
+/// satisfied.
 class MonotonicDescriptor {
 public:
-  using Edge = std::pair<BasicBlock *, BasicBlock *>;
-
   MonotonicDescriptor() = default;
 
   MonotonicDescriptor(
       const SmallPtrSetImpl<PHINode *> &Chain,
       const DenseMap<Instruction *, const SCEV *> &CompressedMemOps,
-      Instruction *StepInst, Edge PredEdge, const SCEVAddRecExpr *Expr)
+      Instruction *StepInst, const SCEVAddRecExpr *Expr)
       : Chain(llvm::from_range, Chain), CompressedMemOps(CompressedMemOps),
-        StepInst(StepInst), PredEdge(PredEdge), Expr(Expr) {}
+        StepInst(StepInst), Expr(Expr) {}
 
   /// Returns the PHIs that feed into the backedge of the monotonic PHI.
   const SmallPtrSetImpl<PHINode *> &getChain() const { return Chain; }
 
   // Returns memory operations whose addresses are derived from this monotonic
   // PHI. The keys are load or store instructions, the values are SCEVAddRecs
-  // that represent the pointer operand along the predicated edge.
+  // that represent how the pointer is updated by StepInst.
   const DenseMap<Instruction *, const SCEV *> &getCompressedMemoryOps() const {
     return CompressedMemOps;
   }
@@ -515,12 +511,9 @@ public:
   /// Returns the instruction that updates the value of the monotonic PHI.
   Instruction *getStepInst() const { return StepInst; }
 
-  /// Returns the edge where the monotonic value/PHI is updated when taken.
-  Edge getPredicateEdge() const { return PredEdge; }
-
   /// Returns the expression that represents the monotonic PHI. Note: The
-  /// conditional update is represented with a plain SCEVAddRec within the
-  /// expression, this only holds along the predicated edge.
+  /// conditional update is represented with a plain SCEVAddRec. This only holds
+  /// on iterations where the monotonic is updated by StepInst.
   const SCEVAddRecExpr *getExpr() const { return Expr; }
 
   /// Returns true if \p PN is a monotonic variable in the loop \p L. If \p PN
@@ -539,20 +532,15 @@ private:
   /// The instruction that updates the value of the monotonic PHI.
   Instruction *StepInst = nullptr;
 
-  /// The predicated edge where the monotonic value/PHI is updated.
-  /// The common case is {StepInstBlock, StepInstBlock->getSingleSuccessor()}.
-  /// Note: StepInstBlock = StepInst->getParent().
-  Edge PredEdge = {};
-
   /// Expression that represents the monotonic PHI. Within the expression, the
   /// conditional update is represented as an (unconditional) SCEVAddRec.
   const SCEVAddRecExpr *Expr = nullptr;
 
   /// Verifies \p PN is a monotonic PHI and collects the PHIs within the chain.
-  /// Returns the StepInst, PHI SCEV expression, and the predicated edge.
+  /// Returns the StepInst and a SCEV expression for \p PN.
   static std::pair<Instruction *, const SCEV *>
   CollectMonotonicPHIChain(PHINode *PN, const Loop *L, PHINode *BackEdgeInst,
-                           SmallPtrSetImpl<PHINode *> &Chain, Edge &PredEdge,
+                           SmallPtrSetImpl<PHINode *> &Chain,
                            ScalarEvolution &SE);
 
   /// Collects the memory operations whose addresses are derived from \p PN.
@@ -560,9 +548,8 @@ private:
   /// placed in \p CompressedMemOps. Returns true if no unexpected users of \p
   /// PN were found.
   static bool CollectCompressedMemOpUsers(
-      PHINode *PN, const Loop *L, Edge PredEdge,
-      const SmallPtrSetImpl<PHINode *> &Chain, const SCEV *PhiSCEV,
-      ScalarEvolution &SE,
+      PHINode *PN, const Loop *L, const SmallPtrSetImpl<PHINode *> &Chain,
+      const SCEV *PhiSCEV, ScalarEvolution &SE,
       DenseMap<Instruction *, const SCEV *> &CompressedMemOps);
 };
 

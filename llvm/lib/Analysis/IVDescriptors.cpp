@@ -1730,7 +1730,6 @@ std::pair<Instruction *, const SCEV *>
 MonotonicDescriptor::CollectMonotonicPHIChain(PHINode *PN, const Loop *L,
                                               PHINode *BackEdgeInst,
                                               SmallPtrSetImpl<PHINode *> &Chain,
-                                              Edge &PredEdge,
                                               ScalarEvolution &SE) {
   Value *StepOp = nullptr;
   PHINode *PHIChain = BackEdgeInst;
@@ -1753,7 +1752,6 @@ MonotonicDescriptor::CollectMonotonicPHIChain(PHINode *PN, const Loop *L,
       // Only one update/step is allowed. The unmodified value must be PN.
       if (StepOp || NextPHIChain)
         return {};
-      PredEdge = Edge{Block, PHIChain->getParent()};
       StepOp = Incoming;
     }
     PHIChain = NextPHIChain;
@@ -1763,7 +1761,6 @@ MonotonicDescriptor::CollectMonotonicPHIChain(PHINode *PN, const Loop *L,
   if (!StepInst)
     return {};
 
-  // Construct SCEVAddRec for this value.
   Value *Start = PN->getIncomingValueForBlock(L->getLoopPreheader());
 
   Value *Step = nullptr;
@@ -1793,19 +1790,12 @@ MonotonicDescriptor::CollectMonotonicPHIChain(PHINode *PN, const Loop *L,
 }
 
 bool MonotonicDescriptor::CollectCompressedMemOpUsers(
-    PHINode *PN, const Loop *L, Edge PredEdge,
-    const SmallPtrSetImpl<PHINode *> &Chain, const SCEV *PhiSCEV,
-    ScalarEvolution &SE,
+    PHINode *PN, const Loop *L, const SmallPtrSetImpl<PHINode *> &Chain,
+    const SCEV *PhiSCEV, ScalarEvolution &SE,
     DenseMap<Instruction *, const SCEV *> &CompressedMemOps) {
   ValueToSCEVMapTy PhiMap{{PN, PhiSCEV}};
 
   auto GetCompressedPtrSCEV = [&](Instruction *MemI) -> const SCEV * {
-    // Check that the memory operation has the same predicate as the step.
-    // TODO: Relax these restrictions.
-    BasicBlock *AccessBB = MemI->getParent();
-    if (PredEdge != Edge(AccessBB, AccessBB->getUniqueSuccessor()))
-      return nullptr;
-
     const SCEV *PtrSCEV = SCEVParameterRewriter::rewrite(
         SE.getSCEV(getLoadStorePointerOperand(MemI)), SE, PhiMap);
     auto *AddRec = dyn_cast<SCEVAddRecExpr>(PtrSCEV);
@@ -1814,7 +1804,6 @@ bool MonotonicDescriptor::CollectCompressedMemOpUsers(
 
     // Check if pointer step equals access size.
     SCEVUse Step = AddRec->getStepRecurrence(SE);
-
     if (Step != SE.getSizeOfExpr(Step->getType(), getLoadStoreType(MemI)))
       return nullptr;
 
@@ -1891,10 +1880,9 @@ bool MonotonicDescriptor::isMonotonicPHI(PHINode *PN, const Loop *L,
   // Only allow the monotonic recurrence to feed the PHI chain or memory
   // operations addressed by a compressed pointer. Save those memory operations
   // on the descriptor.
-  Edge PredEdge;
   SmallPtrSet<PHINode *, 1> Chain;
   auto [StepInst, PhiSCEV] =
-      CollectMonotonicPHIChain(PN, L, BackEdgeInst, Chain, PredEdge, SE);
+      CollectMonotonicPHIChain(PN, L, BackEdgeInst, Chain, SE);
   if (!StepInst)
     return false;
 
@@ -1903,11 +1891,10 @@ bool MonotonicDescriptor::isMonotonicPHI(PHINode *PN, const Loop *L,
     return false;
 
   DenseMap<Instruction *, const SCEV *> CompressedMemOps;
-  if (!CollectCompressedMemOpUsers(PN, L, PredEdge, Chain, PhiAddRec, SE,
+  if (!CollectCompressedMemOpUsers(PN, L, Chain, PhiAddRec, SE,
                                    CompressedMemOps))
     return false;
 
-  Desc = MonotonicDescriptor(Chain, CompressedMemOps, StepInst, PredEdge,
-                             PhiAddRec);
+  Desc = MonotonicDescriptor(Chain, CompressedMemOps, StepInst, PhiAddRec);
   return true;
 }
