@@ -491,21 +491,20 @@ class MonotonicDescriptor {
 public:
   MonotonicDescriptor() = default;
 
-  MonotonicDescriptor(
-      const SmallPtrSetImpl<PHINode *> &Chain,
-      const DenseMap<Instruction *, const SCEV *> &CompressedMemOps,
-      Instruction *StepInst, const SCEVAddRecExpr *Expr)
-      : Chain(llvm::from_range, Chain), CompressedMemOps(CompressedMemOps),
+  MonotonicDescriptor(const SmallPtrSetImpl<PHINode *> &Chain,
+                      const DenseMap<Value *, const SCEV *> &CompressedPtrs,
+                      Instruction *StepInst, const SCEVAddRecExpr *Expr)
+      : Chain(llvm::from_range, Chain), CompressedPtrs(CompressedPtrs),
         StepInst(StepInst), Expr(Expr) {}
 
   /// Returns the PHIs that feed into the backedge of the monotonic PHI.
   const SmallPtrSetImpl<PHINode *> &getChain() const { return Chain; }
 
-  // Returns memory operations whose addresses are derived from this monotonic
-  // PHI. The keys are load or store instructions, the values are SCEVAddRecs
-  // that represent how the pointer is updated by StepInst.
-  const DenseMap<Instruction *, const SCEV *> &getCompressedMemoryOps() const {
-    return CompressedMemOps;
+  // Returns pointers (used by load/store operations) where the address is
+  // derived from this monotonic PHI. The keys are pointers, the values are
+  // SCEVAddRecs that represent how the pointer is updated by StepInst.
+  const DenseMap<Value *, const SCEV *> &getCompressedPtrs() const {
+    return CompressedPtrs;
   }
 
   /// Returns the instruction that updates the value of the monotonic PHI.
@@ -526,8 +525,8 @@ private:
   /// The PHIs that feed into the backedge update of the monotonic PHI.
   SmallPtrSet<PHINode *, 1> Chain;
 
-  /// Memory operations whose addresses are derived from this monotonic PHI.
-  DenseMap<Instruction *, const SCEV *> CompressedMemOps;
+  /// Pointers whose addresses are derived from this monotonic PHI.
+  DenseMap<Value *, const SCEV *> CompressedPtrs;
 
   /// The instruction that updates the value of the monotonic PHI.
   Instruction *StepInst = nullptr;
@@ -543,14 +542,15 @@ private:
                            SmallPtrSetImpl<PHINode *> &Chain,
                            ScalarEvolution &SE);
 
-  /// Collects the memory operations whose addresses are derived from \p PN.
-  /// The memory operations and SCEV expressions for their pointer operands are
-  /// placed in \p CompressedMemOps. Returns true if no unexpected users of \p
-  /// PN were found.
-  static bool CollectCompressedMemOpUsers(
-      PHINode *PN, const Loop *L, const SmallPtrSetImpl<PHINode *> &Chain,
-      const SCEV *PhiSCEV, ScalarEvolution &SE,
-      DenseMap<Instruction *, const SCEV *> &CompressedMemOps);
+  /// Collects pointers values (used by loads/stores) whose addresses are
+  /// derived from \p PN. The pointer operands and SCEV expressions for their
+  /// pointer operands are placed in \p CompressedPtrs. Returns true if no
+  /// unexpected users of \p PN were found.
+  static bool
+  CollectCompressedPointers(PHINode *PN, const Loop *L,
+                            const SmallPtrSetImpl<PHINode *> &Chain,
+                            const SCEV *PhiSCEV, ScalarEvolution &SE,
+                            DenseMap<Value *, const SCEV *> &CompressedPtrs);
 };
 
 } // end namespace llvm

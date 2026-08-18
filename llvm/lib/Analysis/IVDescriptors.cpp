@@ -1789,22 +1789,22 @@ MonotonicDescriptor::CollectMonotonicPHIChain(PHINode *PN, const Loop *L,
   return {StepInst, PhiSCEV};
 }
 
-bool MonotonicDescriptor::CollectCompressedMemOpUsers(
+bool MonotonicDescriptor::CollectCompressedPointers(
     PHINode *PN, const Loop *L, const SmallPtrSetImpl<PHINode *> &Chain,
     const SCEV *PhiSCEV, ScalarEvolution &SE,
-    DenseMap<Instruction *, const SCEV *> &CompressedMemOps) {
+    DenseMap<Value *, const SCEV *> &CompressedPtrs) {
   ValueToSCEVMapTy PhiMap{{PN, PhiSCEV}};
 
-  auto GetCompressedPtrSCEV = [&](Instruction *MemI) -> const SCEV * {
-    const SCEV *PtrSCEV = SCEVParameterRewriter::rewrite(
-        SE.getSCEV(getLoadStorePointerOperand(MemI)), SE, PhiMap);
+  auto GetCompressedPtrSCEV = [&](Value *Ptr, Type *AccessTy) -> const SCEV * {
+    const SCEV *PtrSCEV =
+        SCEVParameterRewriter::rewrite(SE.getSCEV(Ptr), SE, PhiMap);
     auto *AddRec = dyn_cast<SCEVAddRecExpr>(PtrSCEV);
     if (!AddRec || !AddRec->isAffine())
       return nullptr;
 
     // Check if pointer step equals access size.
     SCEVUse Step = AddRec->getStepRecurrence(SE);
-    if (Step != SE.getSizeOfExpr(Step->getType(), getLoadStoreType(MemI)))
+    if (Step != SE.getSizeOfExpr(Step->getType(), AccessTy))
       return nullptr;
 
     return PtrSCEV;
@@ -1827,10 +1827,11 @@ bool MonotonicDescriptor::CollectCompressedMemOpUsers(
           SI && SI->getValueOperand() == CurrentVal)
         return false;
 
-      const SCEV *CompressedPtr = GetCompressedPtrSCEV(I);
-      if (!CompressedPtr)
+      Value *Ptr = getLoadStorePointerOperand(I);
+      const SCEV *PrtSCEV = GetCompressedPtrSCEV(Ptr, getLoadStoreType(I));
+      if (!PrtSCEV)
         return false;
-      CompressedMemOps.insert({I, CompressedPtr});
+      CompressedPtrs.insert({Ptr, PrtSCEV});
       continue;
     }
 
@@ -1878,8 +1879,8 @@ bool MonotonicDescriptor::isMonotonicPHI(PHINode *PN, const Loop *L,
   }
 
   // Only allow the monotonic recurrence to feed the PHI chain or memory
-  // operations addressed by a compressed pointer. Save those memory operations
-  // on the descriptor.
+  // operations addressed by a compressed pointer. Save those pointers on the
+  // descriptor.
   SmallPtrSet<PHINode *, 1> Chain;
   auto [StepInst, PhiSCEV] =
       CollectMonotonicPHIChain(PN, L, BackEdgeInst, Chain, SE);
@@ -1890,11 +1891,10 @@ bool MonotonicDescriptor::isMonotonicPHI(PHINode *PN, const Loop *L,
   if (!PhiAddRec || !PhiAddRec->isAffine())
     return false;
 
-  DenseMap<Instruction *, const SCEV *> CompressedMemOps;
-  if (!CollectCompressedMemOpUsers(PN, L, Chain, PhiAddRec, SE,
-                                   CompressedMemOps))
+  DenseMap<Value *, const SCEV *> CompressedPtrs;
+  if (!CollectCompressedPointers(PN, L, Chain, PhiAddRec, SE, CompressedPtrs))
     return false;
 
-  Desc = MonotonicDescriptor(Chain, CompressedMemOps, StepInst, PhiAddRec);
+  Desc = MonotonicDescriptor(Chain, CompressedPtrs, StepInst, PhiAddRec);
   return true;
 }
