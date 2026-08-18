@@ -1818,9 +1818,12 @@ bool MonotonicDescriptor::collectAllowedMemoryUses(
     if (!Seen.insert(U).second)
       continue;
 
-    Value *CurrentVal = U->get();
+    // Ignore uses outside the loop, these can use a scalar live-out.
     auto *I = cast<Instruction>(U->getUser());
+    if (!L->contains(I))
+      continue;
 
+    Value *CurrentVal = U->get();
     if (isa<LoadInst, StoreInst>(I)) {
       // Disallow any store using the PN as the stored value.
       if (auto *SI = dyn_cast<StoreInst>(I);
