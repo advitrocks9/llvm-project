@@ -2417,9 +2417,10 @@ bool LoopVectorizationCostModel::isScalarWithPredication(Instruction *I,
   case Instruction::Store: {
     Type *ScalarTy = getLoadStoreType(I);
     Value *Ptr = getLoadStorePointerOperand(I);
+    bool IsCompressed = Legal->isCompressedLoadOrStore(I);
     bool IsConsecutive = Legal->isConsecutivePtr(ScalarTy, Ptr);
-    bool IsCompressed = !IsConsecutive && Legal->isCompressedLoadOrStore(I);
-    return !(IsConsecutive && isLegalMaskedLoadOrStore(I, VF)) &&
+    return !(IsConsecutive && !IsCompressed &&
+             isLegalMaskedLoadOrStore(I, VF)) &&
            !(IsCompressed && isLegalExpandLoadOrCompressStore(I)) &&
            !Config.isLegalGatherOrScatter(I, VF);
   }
